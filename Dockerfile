@@ -12,7 +12,7 @@ WORKDIR /app
 COPY . .
 
 # Install dependencies using uv
-RUN uv sync --frozen --no-cache
+RUN uv sync --frozen --no-cache --no-dev
 
 # Run your app
 CMD ["uv", "run", "python", "server.py"]
