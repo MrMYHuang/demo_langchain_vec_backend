@@ -22,13 +22,37 @@ from qdrant_client.models import Distance, VectorParams, Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+)
+
+# Service name is required for most backends
+resource = Resource.create(attributes={
+    SERVICE_NAME: __name__
+})
+
+tracerProvider = TracerProvider(resource=resource)
+JAEGER_URL = os.getenv("JAEGER_URL") or "http://jaeger:4318"
+processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{JAEGER_URL}/v1/traces"))
+tracerProvider.add_span_processor(processor)
+trace.set_tracer_provider(tracerProvider)
+tracer = trace.get_tracer(__name__)
+
 EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-QDRANT_URL = "http://qdrant:6333"
+QDRANT_URL = os.getenv("QDRANT_URL") or "http://qdrant:6333"
 
 # In[13]:
 
 
 app = FastAPI(title="langchain vec backend")
+instrumentor = FastAPIInstrumentor()
+instrumentor.instrument_app(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],          # Allowed origins
@@ -52,13 +76,14 @@ async def upload(file: UploadFile):
 
 @app.get("/search")
 async def search(sentence: Optional[str] = None):
-    global vector_store
-    if sentence:
-        results: list[Document] = await vector_store.asimilarity_search(sentence)
-        sentences = list(map(lambda d: d.page_content, results))
-        return {"sentences": sentences}
-    else:
-        return {"sentences": []}
+    global vector_store, tracer
+    with tracer.start_as_current_span("search qdrant"):
+        if sentence:
+            results: list[Document] = await vector_store.asimilarity_search(sentence)
+            sentences = list(map(lambda d: d.page_content, results))
+            return {"sentences": sentences}
+        else:
+            return {"sentences": []}
 
 @app.on_event("startup")
 def init():
@@ -105,3 +130,6 @@ def init_vector_store():
         embedding=embed_model,
     )
 
+@app.get("/")
+async def index():
+    return "Hi."
